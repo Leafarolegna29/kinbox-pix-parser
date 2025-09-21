@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import axios from 'axios';
-import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.js';
+import * as pdfjsLib from 'pdfjs-dist/build/pdf.js';
 import { fileTypeFromBuffer } from 'file-type';
 import crypto from 'crypto';
 import Tesseract from 'tesseract.js';
