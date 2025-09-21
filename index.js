@@ -217,32 +217,41 @@ app.post('/kinbox/finalizar', async (req, res) => {
     log('ERROR /kinbox/finalizar', err.message);
     return res.status(400).json({ ok: false, error: String(err.message || err) });
   }
-});
-
-// 3) TESTE DE PIXEL
+// TESTE DE EVENTO SIMPLES
 app.get('/test-pixel', async (_req, res) => {
   try {
     const url = `https://graph.facebook.com/v19.0/${process.env.FB_PIXEL_ID}/events?access_token=${process.env.FB_CAPI_TOKEN}`;
+
     const body = {
       data: [{
         event_name: 'Purchase',
         event_time: Math.floor(Date.now() / 1000),
         action_source: 'website',
         event_id: 'teste-12345',
-        custom_data: { currency: 'BRL', value: 10.00 }
+        custom_data: {
+          currency: 'BRL',
+          value: 10.00
+        }
       }],
       test_event_code: process.env.FB_TEST_EVENT_CODE
     };
 
     const resp = await axios.post(url, body, { timeout: 20000 });
-    console.log('Evento de teste enviado!', resp.data);
+
+    console.log('✅ Evento de teste enviado!', resp.data);
     res.json(resp.data);
+
   } catch (err) {
-    console.error('Erro ao enviar teste:', err.message);
-    res.status(500).json({ error: err.message });
+    if (err.response) {
+      // 🔥 Mostra resposta completa do Facebook
+      console.error('Erro Facebook:', err.response.data);
+      res.status(400).json(err.response.data);
+    } else {
+      console.error('Erro inesperado:', err.message);
+      res.status(500).json({ error: err.message });
+    }
   }
 });
-
 // ============ START SERVER ============
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
