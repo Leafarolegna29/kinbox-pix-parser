@@ -1,15 +1,15 @@
 import 'dotenv/config';
 import express from 'express';
 import axios from 'axios';
-import * as pdfjsLib from 'pdfjs-dist/build/pdf.js';
 import { fileTypeFromBuffer } from 'file-type';
 import crypto from 'crypto';
 import Tesseract from 'tesseract.js';
+import * as pdfjsLib from 'pdfjs-dist/build/pdf.js';
 
 const app = express();
 app.use(express.json({ limit: '25mb' }));
 
-// ============ HELPERS ============
+// =================== HELPERS ===================
 const log = (...args) => console.log(new Date().toISOString(), '-', ...args);
 
 const BRL_LABEL = /(valor(?:\s+pago)?|total|pago|pagamento)\s*[:\-]?\s*R?\$?\s*([0-9.\s]+,[0-9]{2})/i;
@@ -45,6 +45,7 @@ const extractTxid = (text) => {
 };
 
 const sha1 = (buf) => crypto.createHash('sha1').update(buf).digest('hex');
+
 const normalizePhone = (phone) => (phone || '').replace(/[^\d]/g, '');
 const sha256 = (x) => crypto.createHash('sha256').update(x).digest('hex');
 
@@ -56,8 +57,8 @@ const getUserDataHashes = ({ phone, email }) => {
   return ud;
 };
 
-// ============ SIMPLE IN-MEMORY STORE ============
-const sessions = new Map(); // key = customerPlatformId
+// =================== SESSION STORE ===================
+const sessions = new Map();
 
 function getSession(customerPlatformId) {
   const key = String(customerPlatformId);
@@ -74,23 +75,23 @@ function getSession(customerPlatformId) {
   return sessions.get(key);
 }
 
-// ============ FILE / OCR ============
+// =================== FILE / OCR ===================
 async function downloadBuffer(url) {
   const resp = await axios.get(url, { responseType: 'arraybuffer', timeout: 30000 });
   return { buf: Buffer.from(resp.data), contentType: resp.headers['content-type'] || '' };
 }
 
 async function parsePDF(buf) {
-  const doc = await pdfjsLib.getDocument({ data: buf }).promise;
-  let textContent = '';
-  for (let i = 1; i <= doc.numPages; i++) {
-    const page = await doc.getPage(i);
-    const txt = await page.getTextContent();
-    textContent += txt.items.map(t => t.str).join(' ') + '\n';
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  let text = '';
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    text += content.items.map((it) => it.str).join(' ') + '\n';
   }
-  const txid = extractTxid(textContent);
-  const { value, confidence, all } = extractValues(textContent);
-  return { kind: 'pdf', fileHash: sha1(buf), text: textContent, txid, value, confidence, all };
+  const txid = extractTxid(text);
+  const { value, confidence, all } = extractValues(text);
+  return { kind: 'pdf', fileHash: sha1(buf), text, txid, value, confidence, all };
 }
 
 async function parseImage(buf) {
@@ -111,11 +112,11 @@ async function parseAttachment(url) {
   } else if (kind.startsWith('image/')) {
     return await parseImage(buf);
   } else {
-    return await parseImage(buf); // fallback OCR
+    return await parseImage(buf);
   }
 }
 
-// ============ KINBOX BOT-HOOK ============
+// =================== KINBOX BOT-HOOK ===================
 async function sendBotHook({ customerPlatformId, text, pagamentoObj }) {
   const payload = {
     customerPlatformId,
@@ -126,10 +127,12 @@ async function sendBotHook({ customerPlatformId, text, pagamentoObj }) {
     ]
   };
   log('-> bot-hook', { customerPlatformId, text });
-  await axios.post(process.env.KINBOX_BOT_HOOK, payload, { timeout: 20000 });
+  if (process.env.KINBOX_BOT_HOOK) {
+    await axios.post(process.env.KINBOX_BOT_HOOK, payload, { timeout: 20000 });
+  }
 }
 
-// ============ META CAPI ============
+// =================== META CAPI ===================
 async function sendPurchaseToMeta({ value, sessionId, phone, email }) {
   const url = `https://graph.facebook.com/v19.0/${process.env.FB_PIXEL_ID}/events?access_token=${process.env.FB_CAPI_TOKEN}`;
   const body = {
@@ -148,20 +151,16 @@ async function sendPurchaseToMeta({ value, sessionId, phone, email }) {
   return resp.data;
 }
 
-// ============ ROUTES ============
-app.get('/', (_req, res) => res.send('Servidor do Kinbox Pix Parser está rodando 🚀'));
+// =================== ROUTES ===================
 
-// Health check
-app.get('/health', (_req, res) => res.json({ ok: true, now: Date.now() }));
-
-// 1) Parse de comprovante
+// 1) Receber comprovante
 app.post('/kinbox/parse', async (req, res) => {
   try {
     const body = req.body || {};
     const customerPlatformId = body.customerPlatformId || body.customer_id || body.conversationId;
     const phone = body.phone || null;
     const email = body.email || null;
-    const attachment_url = body.attachment_url || null;
+    const attachment_url = body.attachment_url || body.attachmentUrl || null;
 
     if (!customerPlatformId) throw new Error('customerPlatformId obrigatório');
     if (!attachment_url) throw new Error('attachment_url obrigatório');
@@ -173,7 +172,7 @@ app.post('/kinbox/parse', async (req, res) => {
     if (!valorDoc && parsed.all?.length) valorDoc = Math.max(...parsed.all);
 
     if (!valorDoc) {
-      const text = '❌ Não consegui ler o valor no comprovante. Envie novamente ou digite o valor assim: 9,90';
+      const text = '❌ Não consegui ler o valor no comprovante. Envie uma imagem nítida ou digite o valor.';
       await sendBotHook({ customerPlatformId, text, pagamentoObj: sess });
       return res.json({ ok: false, message: 'valor_nao_lido', data: sess });
     }
@@ -184,10 +183,10 @@ app.post('/kinbox/parse', async (req, res) => {
     sess.status = 'aberto';
     sess.updated_at = Date.now();
 
-    const text = `✅ Comprovante lido: R$ ${valorDoc.toFixed(2)}.\nSubtotal: R$ ${sess.valor_total.toFixed(2)}.`;
+    const text = `✅ Comprovante lido: R$ ${valorDoc.toFixed(2)}. Subtotal: R$ ${sess.valor_total.toFixed(2)}.`;
     await sendBotHook({ customerPlatformId, text, pagamentoObj: sess });
 
-    return res.json({ ok: true, message: 'ok', data: sess });
+    return res.json({ ok: true, data: sess });
   } catch (err) {
     log('ERROR /kinbox/parse', err.message);
     return res.status(400).json({ ok: false, error: String(err.message || err) });
@@ -201,6 +200,7 @@ app.post('/kinbox/finalizar', async (req, res) => {
     const customerPlatformId = body.customerPlatformId || body.customer_id || body.conversationId;
     const phone = body.phone || null;
     const email = body.email || null;
+
     if (!customerPlatformId) throw new Error('customerPlatformId obrigatório');
 
     const sess = getSession(customerPlatformId);
@@ -209,7 +209,7 @@ app.post('/kinbox/finalizar', async (req, res) => {
 
     const capi = await sendPurchaseToMeta({ value: sess.valor_total, sessionId: sess.session_id, phone, email });
 
-    const text = `🎉 Compra finalizada!\nTotal: R$ ${sess.valor_total.toFixed(2)}\nObrigado!`;
+    const text = `🎉 Compra finalizada! Total: R$ ${sess.valor_total.toFixed(2)}`;
     await sendBotHook({ customerPlatformId, text, pagamentoObj: sess });
 
     return res.json({ ok: true, data: sess, capi });
@@ -217,43 +217,38 @@ app.post('/kinbox/finalizar', async (req, res) => {
     log('ERROR /kinbox/finalizar', err.message);
     return res.status(400).json({ ok: false, error: String(err.message || err) });
   }
-// TESTE DE EVENTO SIMPLES
+});
+
+// 3) Teste de Pixel
 app.get('/test-pixel', async (_req, res) => {
   try {
     const url = `https://graph.facebook.com/v19.0/${process.env.FB_PIXEL_ID}/events?access_token=${process.env.FB_CAPI_TOKEN}`;
-
     const body = {
       data: [{
         event_name: 'Purchase',
         event_time: Math.floor(Date.now() / 1000),
         action_source: 'website',
         event_id: 'teste-12345',
-        custom_data: {
-          currency: 'BRL',
-          value: 10.00
-        }
+        custom_data: { currency: 'BRL', value: 10.00 }
       }],
       test_event_code: process.env.FB_TEST_EVENT_CODE
     };
 
     const resp = await axios.post(url, body, { timeout: 20000 });
-
-    console.log('✅ Evento de teste enviado!', resp.data);
     res.json(resp.data);
-
   } catch (err) {
     if (err.response) {
-      // 🔥 Mostra resposta completa do Facebook
-      console.error('Erro Facebook:', err.response.data);
       res.status(400).json(err.response.data);
     } else {
-      console.error('Erro inesperado:', err.message);
       res.status(500).json({ error: err.message });
     }
   }
 });
-// ============ START SERVER ============
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("Server ON:", PORT);
+
+// 4) Healthcheck
+app.get('/health', (_req, res) => res.json({ ok: true, now: Date.now() }));
+
+// =================== START ===================
+app.listen(process.env.PORT || 3000, () => {
+  console.log('Server ON:', process.env.PORT || 3000);
 });
