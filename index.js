@@ -2,42 +2,34 @@ import express from "express";
 import axios from "axios";
 
 const app = express();
-app.use(express.json({ limit: "50mb" })); // garante suporte a mídia/base64
+app.use(express.json());
 
-// endpoint público para o Kinbox enviar
-app.post("/kinbox-hook", async (req, res) => {
+// URL do seu n8n
+const N8N_URL = "https://n8n.srv1025988.hstgr.cloud/webhook/kinbox/comprovantes";
+
+// Rota principal que o Kinbox vai chamar
+app.post("/", async (req, res) => {
   try {
-    const body = req.body;
+    console.log("📩 Recebi POST do Kinbox:");
+    console.log(JSON.stringify(req.body, null, 2));
 
-    // resposta imediata para o Kinbox (evita timeout)
-    res.status(200).json({ ok: true, received: true });
+    // Repassa para o n8n
+    const response = await axios.post(N8N_URL, req.body, {
+      headers: { "Content-Type": "application/json" }
+    });
 
-    // --- normalização ---
-    const payload = {
-      name: body?.contact?.name || "Desconhecido",
-      phone: body?.contact?.phone || null,
-      conversation_id: body?.conversation?.id || null,
-      message: body?.message?.text || null,
-      media_url: body?.attachments?.[0]?.url || null,
-      timestamp: body?.timestamp || new Date().toISOString(),
-    };
+    console.log("✅ Repassado para n8n:", response.status);
 
-    // envia para o n8n
-    await axios.post(
-      "https://n8n.srv1025988.hstgr.cloud/webhook/kinbox/comprovantes",
-      payload,
-      {
-        headers: { "Content-Type": "application/json" },
-      }
-    );
-
-    console.log("Payload encaminhado para n8n:", payload);
+    // Confirma para o Kinbox
+    res.status(200).json({ ok: true });
   } catch (err) {
-    console.error("Erro no proxy:", err.message);
+    console.error("❌ Erro ao repassar para n8n:", err.message);
+    res.status(500).json({ error: "Erro interno no servidor" });
   }
 });
 
+// Subir servidor
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Proxy ativo na porta ${PORT}`);
+  console.log("🚀 Server ON:", PORT);
 });
